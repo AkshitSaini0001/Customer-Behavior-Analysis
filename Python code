@@ -1,0 +1,177 @@
+
+import pandas as pd
+
+# Load dataset
+df = pd.read_csv("customer_shopping_behavior.csv")
+
+# Display first 5 rows
+print("\n--- First 5 Rows ---")
+print(df.head())
+
+# Dataset information
+print("\n--- Dataset Information ---")
+df.info()
+
+# Summary statistics
+print("\n--- Summary Statistics ---")
+print(df.describe(include='all'))
+
+# Check missing values
+print("\n--- Missing Values ---")
+print(df.isnull().sum())
+
+# Impute missing Review Rating with category median
+df['Review Rating'] = df.groupby('Category')['Review Rating'].transform(
+    lambda x: x.fillna(x.median())
+)
+
+# Check missing values again
+print("\n--- Missing Values After Imputation ---")
+print(df.isnull().sum())
+
+# Rename columns to snake_case
+df.columns = df.columns.str.lower()
+df.columns = df.columns.str.replace(' ', '_')
+
+df = df.rename(columns={
+    'purchase_amount_(usd)': 'purchase_amount'
+})
+
+print("\n--- Updated Column Names ---")
+print(df.columns.tolist())
+
+# Create age_group column
+labels = ['Young Adult', 'Adult', 'Middle-aged', 'Senior']
+
+df['age_group'] = pd.qcut(
+    df['age'],
+    q=4,
+    labels=labels
+)
+
+# Display age and age_group
+print("\n--- Age Group ---")
+print(df[['age', 'age_group']].head(10))
+
+
+
+# Create new column purchase_frequency_days
+
+frequency_mapping = {
+    'Fortnightly': 14,
+    'Weekly': 7,
+    'Monthly': 30,
+    'Quarterly': 90,
+    'Bi-Weekly': 14,
+    'Annually': 365,
+    'Every 3 Months': 90
+}
+
+df['purchase_frequency_days'] = df['frequency_of_purchases'].map(frequency_mapping)
+
+# Display results
+print("\n--- Purchase Frequency in Days ---")
+print(df[['frequency_of_purchases', 'purchase_frequency_days']].head(10))
+
+print(df[['discount_applied', 'promo_code_used']].head(10))
+
+print((df['discount_applied'] == df['promo_code_used']).all())
+
+# Dropping promo code used column
+df = df.drop('promo_code_used', axis=1)
+
+print(df.columns)
+
+
+
+
+
+import psycopg2
+
+try:
+    conn = psycopg2.connect(
+        host="localhost",
+        database="customer_behavior",
+        user="postgres",
+        password="abhay9664",
+        port="5432"
+    )
+
+    print("PostgreSQL Connected Successfully!")
+
+except Exception as e:
+    print("Connection Error:", e)
+
+
+import io
+from psycopg2 import sql
+from pandas.api.types import (
+    is_integer_dtype,
+    is_float_dtype,
+    is_bool_dtype,
+    is_datetime64_any_dtype
+)
+
+# Function to identify SQL data types
+def get_sql_type(dtype):
+    if is_bool_dtype(dtype):
+        return "BOOLEAN"
+    elif is_integer_dtype(dtype):
+        return "BIGINT"
+    elif is_float_dtype(dtype):
+        return "DOUBLE PRECISION"
+    elif is_datetime64_any_dtype(dtype):
+        return "TIMESTAMP"
+    else:
+        return "TEXT"
+
+
+try:
+    cur = conn.cursor()
+
+    # Create table columns
+    columns = [
+        sql.SQL("{} {}").format(
+            sql.Identifier(col),
+            sql.SQL(get_sql_type(df[col].dtype))
+        )
+        for col in df.columns
+    ]
+
+    # Recreate table
+    cur.execute(
+        "DROP TABLE IF EXISTS customer_shopping"
+    )
+
+    cur.execute(
+        sql.SQL("CREATE TABLE customer_shopping ({})").format(
+            sql.SQL(", ").join(columns)
+        )
+    )
+
+    # Convert DataFrame into CSV buffer
+    buffer = io.StringIO()
+    df.to_csv(buffer, index=False, header=False, na_rep=r'\N')
+    buffer.seek(0)
+
+    # Upload data into PostgreSQL
+    cur.copy_expert(
+        r"COPY customer_shopping FROM STDIN WITH (FORMAT CSV, NULL '\N')",
+        buffer
+    )
+
+    conn.commit()
+
+    print("Data uploaded successfully!")
+
+    # Check total records
+    cur.execute("SELECT COUNT(*) FROM customer_shopping")
+    print("Total Records:", cur.fetchone()[0])
+
+    cur.close()
+    conn.close()
+
+except Exception as e:
+    conn.rollback()
+    print("Upload Error:", e)
+    conn.close()
